@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# The vector database (regenerate with ingest.py)
+chroma_db/
+
+# Your personal documents (optional - remove if you want them public)
+docs/
+
+# Temp files
+*.log
+*.tmp
+tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

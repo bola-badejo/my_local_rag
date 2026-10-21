@@ -1,0 +1,14 @@
+ollama pull nomic-embed-text
+ollama pull llama3.2
+
+
+mkdir my_local_rag
+cd my_local_rag
+python -m venv venv
+venv\Scripts\activate
+pip install ollama chromadb pypdf python-docx openpyxl beautifulsoup4 requests streamlit
+
+
+mkdir docs
+mkdir docs/hr
+mkdir docs/finance
