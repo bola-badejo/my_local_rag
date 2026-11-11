@@ -13,13 +13,37 @@ is discarded after.
 import os
 import tempfile
 import streamlit as st
-from ingest import ingest_one
+from config import DOCS_DIR
+from ingest import ingest_one, find_all_docs
 from qa import answer_question
 from vectorstore import get_collection
 
-st.set_page_config(page_title="Local Docs Chat", page_icon="📚", layout="wide")
-st.title("📚 Chat With Your Documents")
-st.caption("100% local. No API keys. No cloud. Turn off your WiFi and this still works.")
+st.set_page_config(page_title="Venia Business Hub Assistant", page_icon="💼", layout="wide")
+st.title("💼 Venia Business Hub Assistant")
+st.caption("Ask anything about Venia's services, pricing, locations and offerings.")
+
+
+@st.cache_resource(show_spinner="Preparing the knowledge base...")
+def _bootstrap_index():
+    """
+    Streamlit Cloud's filesystem is ephemeral — the vector DB is wiped
+    whenever the container restarts. If we boot and the collection is
+    empty but docs/ has files, ingest them automatically so the demo
+    survives cold starts without manual re-uploading.
+    """
+    col = get_collection()
+    if col.count() > 0:
+        return col.count()
+    sources = find_all_docs()
+    for src in sources:
+        try:
+            ingest_one(src)
+        except Exception as e:
+            print(f"Boot ingest failed for {src}: {e}")
+    return get_collection().count()
+
+
+_bootstrap_count = _bootstrap_index()
 
 # --- Sidebar: ingestion controls ---
 with st.sidebar:

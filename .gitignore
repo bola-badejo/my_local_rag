@@ -11,8 +11,9 @@ env/
 # The vector database (regenerate with ingest.py)
 chroma_db/
 
-# Your personal documents (optional - remove if you want them public)
-docs/
+# docs/ is committed so the deployed app can auto-ingest on first boot.
+# If you want to keep local-only files out of the demo index, drop them
+# in a sibling "private_docs/" folder instead.
 
 # Temp files
 *.log
