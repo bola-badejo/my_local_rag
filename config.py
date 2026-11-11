@@ -17,9 +17,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOCS_DIR = os.path.join(BASE_DIR, "docs")
 CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 
-#  The two models (both pulled via `ollama pull`) 
-EMBED_MODEL = "nomic-embed-text"   # ~275MB, converts text → vectors
-CHAT_MODEL  = "llama3.2"           # ~2GB, writes the answers
+#  Models
+# Embeddings run locally inside this process via sentence-transformers.
+# First startup downloads ~90MB from HuggingFace and caches it.
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Chat model is hosted (Gemini). Needs GEMINI_API_KEY in st.secrets or env.
+# Flash = fast + free tier. Swap to "gemini-2.5-pro" for best quality.
+CHAT_MODEL = "gemini-2.5-flash"
 
 #  Chunking 
 # 800 chars ≈ 200 tokens. Overlap means consecutive chunks share

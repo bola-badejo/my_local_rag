@@ -1,40 +1,64 @@
 # vectorstore.py
 """
 The memory system. Chroma stores vectors in a folder on disk.
-Ollama turns text into vectors — locally, on your CPU/GPU.
+sentence-transformers turns text into vectors — locally, inside
+this Python process. No API key, no network, free forever.
 
-Key concept: an embedding is just a list of ~768 numbers that
+Key concept: an embedding is just a list of ~384 numbers that
 represents the MEANING of a piece of text. Similar meanings
 produce similar numbers. That's the whole trick behind
 semantic search.
 """
 
-import ollama
+# Streamlit Cloud ships an old sqlite3; swap it for pysqlite3 before
+# importing chromadb. No-op locally if pysqlite3 isn't installed.
+try:
+    __import__("pysqlite3")
+    import sys
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
+
 import chromadb
+from sentence_transformers import SentenceTransformer
 from config import CHROMA_DIR, COLLECTION_NAME, EMBED_MODEL, TOP_K
+
+
+# Load the embedding model once per process. First call downloads
+# ~90MB from HuggingFace and caches it; subsequent calls are instant.
+_model = None
+
+def _get_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer(EMBED_MODEL)
+    return _model
 
 
 def get_collection():
     """
     Opens the DB. If chroma_db/ doesn't exist yet, creates it.
     If the collection doesn't exist yet, creates that too.
-    So the FIRST call to this function is what actually sets
-    up the database on your disk.
     """
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     return client.get_or_create_collection(
         name=COLLECTION_NAME,
-        metadata={"hnsw:space": "cosine"},  # cosine = good for text similarity
+        metadata={"hnsw:space": "cosine"},
     )
 
 
 def embed(text):
-    """
-    One string → one vector (list of floats).
-    ollama.embeddings runs the local nomic-embed-text model.
-    No network. No API key.
-    """
-    return ollama.embeddings(model=EMBED_MODEL, prompt=text)["embedding"]
+    """One string → one vector (list of floats)."""
+    vec = _get_model().encode(text, convert_to_numpy=True, normalize_embeddings=True)
+    return vec.tolist()
+
+
+def embed_batch(texts):
+    """Many strings → many vectors. Much faster than calling embed() in a loop."""
+    vecs = _get_model().encode(
+        texts, convert_to_numpy=True, normalize_embeddings=True, batch_size=32
+    )
+    return [v.tolist() for v in vecs]
 
 
 def add_chunks(chunks, source):
@@ -48,15 +72,13 @@ def add_chunks(chunks, source):
       - a unique ID (required by Chroma)
 
     IDs are made from source+index so re-ingesting the same file
-    overwrites cleanly instead of duplicating. That's a nice
-    safety net — you can re-run ingest.py without worrying
-    about doubles.
+    overwrites cleanly instead of duplicating.
     """
     if not chunks:
         return 0
 
     collection = get_collection()
-    embeddings = [embed(c) for c in chunks]
+    embeddings = embed_batch(chunks)
     ids = [f"{source}::{i}" for i in range(len(chunks))]
     metadatas = [{"source": source} for _ in chunks]
 
@@ -75,12 +97,6 @@ def search(question, k=TOP_K):
       1. Embed it (same way we embedded the chunks)
       2. Ask Chroma for the k nearest vectors
       3. Return the chunks + their sources
-
-    'Nearest' here means closest in cosine distance — i.e.
-    the chunks whose MEANING is most similar to the question.
-    It's not keyword matching. It finds "password reset"
-    when you ask "how do I recover my account" because those
-    sentences have similar semantic embeddings.
     """
     collection = get_collection()
     if collection.count() == 0:
@@ -92,8 +108,6 @@ def search(question, k=TOP_K):
         n_results=k,
     )
 
-    # Chroma returns lists-of-lists (you can query multiple vectors
-    # at once). We only sent one, so unwrap index [0].
     docs = results["documents"][0] if results["documents"] else []
     metas = results["metadatas"][0] if results["metadatas"] else []
     return docs, metas
@@ -108,6 +122,6 @@ def reset():
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     try:
         client.delete_collection(COLLECTION_NAME)
-        print("💥 Vector database wiped. Re-run ingest.py to rebuild.")
+        print("Vector database wiped. Re-run ingest.py to rebuild.")
     except Exception as e:
         print(f"Nothing to wipe ({e})")

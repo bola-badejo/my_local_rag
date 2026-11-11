@@ -1,17 +1,20 @@
 # qa.py
 """
-The Q&A loop, all local.
+The Q&A loop.
 
 Two steps:
   1. RETRIEVE — find chunks whose embeddings match the question
-  2. GENERATE — hand those chunks + the question to llama3.2 and
+  2. GENERATE — hand those chunks + the question to Gemini and
                 say "answer using ONLY this context"
 
 That second part matters. Without it, the model will answer from
 its training data and you'll get confident-sounding garbage.
 """
 
-import ollama
+import os
+from google import genai
+from google.genai import types
+
 from config import CHAT_MODEL, TOP_K
 from vectorstore import search
 
@@ -29,52 +32,65 @@ Context:
 {context}"""
 
 
-def answer_question(question, k=TOP_K):
-    """
-    Returns {"answer": str, "sources": list[str]}.
+def _get_api_key():
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        raise RuntimeError(
+            "GEMINI_API_KEY not set. Add it to .streamlit/secrets.toml "
+            "or export it as an environment variable."
+        )
 
-    Note the k parameter — you can bump it per-question if you
-    want more context for a hard question without changing the
-    global config.
-    """
-    #  Retrieve 
+
+_client = None
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=_get_api_key())
+    return _client
+
+
+def answer_question(question, k=TOP_K):
+    """Returns {"answer": str, "sources": list[str]}."""
     docs, metas = search(question, k=k)
 
     if not docs:
         return {
-            "answer": "No documents are indexed yet. Run `python ingest.py` first.",
+            "answer": "No documents are indexed yet. Upload something in the sidebar first.",
             "sources": [],
         }
 
-    # Build the context string with source tags on each chunk.
-    # The tags let the LLM say "according to manual.pdf" naturally.
     context = "\n\n\n\n".join(
         f"[Source: {m.get('source', 'unknown')}]\n{d}"
         for d, m in zip(docs, metas)
     )
     sources = sorted({m.get("source", "unknown") for m in metas})
 
-    #  Generate 
-    response = ollama.chat(
+    response = _get_client().models.generate_content(
         model=CHAT_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.format(context=context)},
-            {"role": "user", "content": question},
-        ],
-        options={"temperature": 0},  # 0 = deterministic, factual
+        contents=question,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT.format(context=context),
+            temperature=0,
+        ),
     )
 
     return {
-        "answer": response["message"]["content"],
+        "answer": response.text,
         "sources": sources,
     }
 
 
 if __name__ == "__main__":
-    print("💬 Local RAG bot ready. Type 'quit' to exit.\n")
+    print("RAG bot ready. Type 'quit' to exit.\n")
     while True:
         try:
-            q = input("❓ ").strip()
+            q = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nBye!")
             break
@@ -85,8 +101,8 @@ if __name__ == "__main__":
             break
 
         result = answer_question(q)
-        print(f"\n💬 {result['answer']}")
+        print(f"\n{result['answer']}")
         if result["sources"]:
-            print(f"📚 {', '.join(result['sources'])}\n")
+            print(f"Sources: {', '.join(result['sources'])}\n")
         else:
             print()
