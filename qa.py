@@ -71,14 +71,26 @@ def answer_question(question, k=TOP_K):
     )
     sources = sorted({m.get("source", "unknown") for m in metas})
 
-    response = _get_client().models.generate_content(
-        model=CHAT_MODEL,
-        contents=question,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT.format(context=context),
-            temperature=0,
-        ),
-    )
+    try:
+        response = _get_client().models.generate_content(
+            model=CHAT_MODEL,
+            contents=question,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT.format(context=context),
+                temperature=0,
+            ),
+        )
+    except Exception as e:
+        # Streamlit redacts raw exceptions in prod; surface the real message
+        # so we can diagnose in the UI instead of digging through logs.
+        return {
+            "answer": (
+                f"**Model call failed.**\n\n"
+                f"`{type(e).__name__}`: {e}\n\n"
+                f"Model requested: `{CHAT_MODEL}`"
+            ),
+            "sources": sources,
+        }
 
     return {
         "answer": response.text,

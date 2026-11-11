@@ -2,7 +2,7 @@ streamlit>=1.37
 chromadb>=0.5.0
 pysqlite3-binary>=0.5.3  # Streamlit Cloud ships old sqlite3; Chroma needs >=3.35
 sentence-transformers>=3.0.0
-google-genai>=0.3.0
+google-genai>=1.0.0
 pypdf>=4.0.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
