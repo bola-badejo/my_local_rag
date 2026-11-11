@@ -57,44 +57,66 @@ def _get_client():
 _resolved_model = None
 
 
-def _pick_available_model():
+def _rank_candidates():
     """
-    Ask Gemini which models this key can actually call. Prefer the newest
-    Flash variant (cheap + fast enough for RAG), then Pro, then anything
-    that supports generateContent.
+    Ask Gemini which models this key can actually call, filter to realistic
+    chat models, and return them ranked best-first.
     """
     try:
         listed = list(_get_client().models.list())
     except Exception as e:
-        return None, f"could not list models: {type(e).__name__}: {e}"
+        return [], f"could not list models: {type(e).__name__}: {e}"
 
-    # Filter to models that support generateContent
+    # Keywords that disqualify a model from being tried as a chat backend.
+    # These are experimental / specialized / expensive-and-no-free-quota variants.
+    BLOCK = (
+        "embed", "embedding", "tts", "image-gen", "imagegen",
+        "live", "native-audio", "aqa", "learnlm",
+        "deep-research", "research-pro",
+        "thinking", "reasoning",
+        "veo", "imagen",
+    )
+    SOFT_PENALTY = ("preview", "exp", "experimental", "-dev", "-latest")
+
+    import re
+
     callable_models = []
     for m in listed:
-        name = getattr(m, "name", "") or ""
-        methods = getattr(m, "supported_actions", None) or getattr(m, "supported_generation_methods", None) or []
-        if "generateContent" in methods or not methods:
-            callable_models.append(name.replace("models/", ""))
+        name = (getattr(m, "name", "") or "").replace("models/", "")
+        if not name:
+            continue
+        methods = (
+            getattr(m, "supported_actions", None)
+            or getattr(m, "supported_generation_methods", None)
+            or []
+        )
+        if methods and "generateContent" not in methods:
+            continue
+        if any(bad in name for bad in BLOCK):
+            continue
+        callable_models.append(name)
 
     if not callable_models:
-        return None, f"no generative models visible to this key (saw {len(listed)} total)"
+        return [], f"no usable chat models visible to this key (saw {len(listed)} total)"
 
     def score(name):
         s = 0
-        if "flash" in name: s += 100
-        if "pro" in name: s += 50
-        # Prefer numbered stable releases over "latest" aliases
-        import re
+        if "flash" in name and "lite" in name: s += 120   # cheapest / most free quota
+        elif "flash" in name: s += 100
+        elif "pro" in name: s += 60
+        # version number bump
         m = re.search(r"(\d+(?:\.\d+)?)", name)
         if m:
             try: s += float(m.group(1)) * 10
             except ValueError: pass
-        if "exp" in name or "preview" in name: s -= 30
-        if "tts" in name or "image" in name or "embed" in name: s -= 1000
+        for p in SOFT_PENALTY:
+            if p in name: s -= 25
+        # bias away from dated snapshots like "-11-2025" when a cleaner name exists
+        if re.search(r"-\d{1,2}-\d{4}$", name): s -= 10
         return s
 
     callable_models.sort(key=score, reverse=True)
-    return callable_models[0], f"picked {callable_models[0]} from {len(callable_models)} candidates"
+    return callable_models, f"{len(callable_models)} candidates"
 
 
 def _call_model(model, question, context):
@@ -126,43 +148,39 @@ def answer_question(question, k=TOP_K):
     )
     sources = sorted({m.get("source", "unknown") for m in metas})
 
-    model_to_try = _resolved_model or CHAT_MODEL
+    # If we already found a working model this session, go straight to it.
+    if _resolved_model:
+        try:
+            response = _call_model(_resolved_model, question, context)
+            return {"answer": response.text, "sources": sources}
+        except Exception:
+            # Cached model stopped working (quota?) — re-detect below.
+            _resolved_model = None
 
-    try:
-        response = _call_model(model_to_try, question, context)
-        _resolved_model = model_to_try
-        return {"answer": response.text, "sources": sources}
+    # Build the try-order: configured model first, then ranked list from the API.
+    attempt_errors = []
+    try_order = [CHAT_MODEL]
+    ranked, note = _rank_candidates()
+    for name in ranked:
+        if name not in try_order:
+            try_order.append(name)
 
-    except Exception as first_err:
-        # First attempt failed — try to auto-detect a working model and retry.
-        picked, picked_note = _pick_available_model()
-        if picked and picked != model_to_try:
-            try:
-                response = _call_model(picked, question, context)
-                _resolved_model = picked
-                return {
-                    "answer": response.text + f"\n\n_(auto-selected model: `{picked}`)_",
-                    "sources": sources,
-                }
-            except Exception as second_err:
-                return {
-                    "answer": (
-                        f"**Both the configured and the auto-selected model failed.**\n\n"
-                        f"Configured: `{model_to_try}` → `{type(first_err).__name__}`: {first_err}\n\n"
-                        f"Auto-picked: `{picked}` → `{type(second_err).__name__}`: {second_err}"
-                    ),
-                    "sources": sources,
-                }
+    for candidate in try_order[:6]:  # cap retries so we don't burn the clock
+        try:
+            response = _call_model(candidate, question, context)
+            _resolved_model = candidate
+            suffix = ""
+            if candidate != CHAT_MODEL:
+                suffix = f"\n\n_(auto-selected model: `{candidate}`)_"
+            return {"answer": response.text + suffix, "sources": sources}
+        except Exception as e:
+            attempt_errors.append((candidate, type(e).__name__, str(e)[:240]))
 
-        return {
-            "answer": (
-                f"**Model call failed and auto-detection could not help.**\n\n"
-                f"Configured: `{model_to_try}`\n"
-                f"Error: `{type(first_err).__name__}`: {first_err}\n\n"
-                f"Auto-detection: {picked_note}"
-            ),
-            "sources": sources,
-        }
+    # Nothing worked — show the user which candidates we tried and what went wrong.
+    lines = [f"**No model this key can call succeeded.** ({note})\n"]
+    for name, etype, msg in attempt_errors:
+        lines.append(f"- `{name}` → `{etype}`: {msg}")
+    return {"answer": "\n".join(lines), "sources": sources}
 
 
 if __name__ == "__main__":
